@@ -47,7 +47,6 @@ textract_client = boto3.client(
 DATABASE_URL = os.getenv('DATABASE_URL')
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
-session = Session()
 
 def parse_s3_url(url):
     """
@@ -79,6 +78,8 @@ def process_file(file):
     Function process_file(file):
         Processes a single file by extracting text using AWS Textract and updating the database.
     """
+    # Create a new session for each file processing
+    session = Session()
     try:
         logger.info(f"Processing file: {file.title}")
 
@@ -138,11 +139,10 @@ def process_file(file):
                 token_count_estimate = len(tokenize_string(content))
 
                 # Update the database
-                session.query(File).filter(File.id == file.id).update({
-                    'pageContentUrl': page_content_upload_url,
-                    'wordCount': word_count,
-                    'tokenCountEstimate': token_count_estimate
-                })
+                file_obj = session.merge(file)  # Merge the file object into the current session
+                file_obj.pageContentUrl = page_content_upload_url
+                file_obj.wordCount = word_count
+                file_obj.tokenCountEstimate = token_count_estimate
                 session.commit()
                 logger.info(f"Updated file record in database: {file.id}")
 
@@ -154,6 +154,9 @@ def process_file(file):
 
     except Exception as e:
         logger.error(f"Error processing file {file.id}: {str(e)}")
+        session.rollback()  # Rollback the session in case of an error
+    finally:
+        session.close()  # Always close the session
 
 def main():
     """
@@ -161,9 +164,14 @@ def main():
         Entry point of the script. Retrieves files to process and starts multithreaded processing.
     """
     try:
-        files = session.query(File).filter(File.pageContentUrl == None).all()
+        # Create a session for the main function
+        session = Session()
+        files = session.query(File).filter(File.pageContentUrl == None, File.folderId == '278c9c29-1a99-4f32-a9f8-bce6b737a8b0').all()
 
         logger.info(f"Found {len(files)} files to process")
+
+        # Close the session after querying
+        session.close()
 
         max_workers = 20
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -174,8 +182,6 @@ def main():
         logger.info("Processing complete")
     except Exception as e:
         logger.error(f"Error in main: {str(e)}")
-    finally:
-        session.close()
 
 if __name__ == "__main__":
     main()
